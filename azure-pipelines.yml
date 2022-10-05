@@ -75,3 +75,133 @@ stages:
          scanPath: '$(Pipeline.Workspace)'
          format: 'HTML'
        displayName: SCA
+- stage: Deploy 
+  jobs:  
+  - job: buildimage
+    displayName:  Build Image
+    steps:
+    - task: DownloadBuildArtifacts@0
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'appJar'
+        downloadPath: '$(Pipeline.Workspace)'
+      displayName: Descarga Jar
+    
+    - script: "mkdir -p build/libs; mv $(Pipeline.Workspace)/appJar/build/libs/ build/; chmod -R 555 build/libs"  
+      displayName:  Se mueve JAR a carpeta raiz
+    
+    - script: | 
+       sudo apt-get install -y rpm
+       wget https://github.com/aquasecurity/trivy/releases/download/v0.27.1/trivy_0.27.1_Linux-64bit.deb
+       sudo dpkg -i trivy_0.27.1_Linux-64bit.deb
+       trivy config $(Pipeline.Workspace)
+      displayName: Kubernetes YAML Scan
+    
+    - task: Docker@2
+      inputs:
+        containerRegistry: 'Docker'
+        command: 'login'
+      displayName: Docker registry login
+    
+    - task: Docker@2
+      inputs:
+        containerRegistry: 'Docker'
+        repository: 'clagosu/pet-clinic'
+        command: 'build'
+        Dockerfile: '**/Dockerfile'
+        tags: latest
+      displayName: Build Image
+    
+    - script: | 
+       sudo apt-get install -y rpm
+       wget https://github.com/aquasecurity/trivy/releases/download/v0.27.1/trivy_0.27.1_Linux-64bit.deb
+       sudo dpkg -i trivy_0.27.1_Linux-64bit.deb
+       trivy image clagosu/pet-clinic:latest
+      displayName: Image Scan
+    
+    - task: Docker@2
+      displayName: Docker push
+      inputs:
+        containerRegistry: 'Docker'
+        repository: 'clagosu/pet-clinic'
+        command: 'push'
+        tags: 'latest'
+
+  - job: Kubernetes
+    displayName: Deploy
+    steps:
+
+    - task: KubectlInstaller@0
+      inputs:
+        kubectlVersion: 'latest'
+      displayName: Instalacion Kubectl
+      
+    - task: Kubernetes@1
+      inputs:
+        connectionType: 'Kubernetes Service Connection'
+        kubernetesServiceEndpoint: 'Kubernetes'
+        namespace: 'default'
+        command: 'login'
+      displayName: AKS Login
+    
+    - script: | 
+       sudo apt-get install -y rpm
+       wget https://github.com/aquasecurity/trivy/releases/download/v0.29.2/trivy_0.29.2_Linux-64bit.deb
+       sudo dpkg -i trivy_0.29.2_Linux-64bit.deb
+       trivy k8s --report=summary cluster
+      displayName: Kubernetes Scan 
+      
+    - task: Kubernetes@1
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: 'azure(9909fced-8203-44b6-af68-11f833a37e60)'
+        azureResourceGroup: 'aks-getting-started'
+        kubernetesCluster: 'aks-getting-started'
+        namespace: 'default'
+        command: 'apply'
+        arguments: '-f kubernetes/deployment-app.yaml'
+        secretType: 'dockerRegistry'
+        containerRegistryType: 'Azure Container Registry'
+        azureSubscriptionEndpointForSecrets: 'azure(9909fced-8203-44b6-af68-11f833a37e60)'
+      displayName: AKS deploy
+    
+    - task: Kubernetes@1
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: 'azure(9909fced-8203-44b6-af68-11f833a37e60)'
+        azureResourceGroup: 'aks-getting-started'
+        kubernetesCluster: 'aks-getting-started'
+        namespace: 'default'
+        command: 'expose'
+        arguments: 'deployment petclinic-deployment --type=LoadBalancer --name=pet-clinic'
+        secretType: 'dockerRegistry'
+        containerRegistryType: 'Azure Container Registry'
+      continueOnError: true
+      displayName: Expose deployment
+    
+    - script: |
+          ipApp=$(kubectl get services pet-clinic --output jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo $ipApp
+          URLApp=http://$ipApp:8085
+          echo $URLApp
+          echo "##vso[task.setvariable variable=appDeploy;isOutput=true]$URLApp"
+      name: getip
+      displayName: Get IP
+    #- task: OwaspZapScan@2
+    #  inputs:
+    #    ZapApiUrl: 'test.com'
+    #    ZapApiKey: 'test'
+    #    TargetUrl: 'http://20.206.197.95:8085'
+    #    ExecuteSpiderScan: true
+    #  continueOnError: true
+
+- stage: DAST 
+  jobs: 
+  - job: DAST
+    steps:     
+    - script: |
+        docker pull owasp/zap2docker-stable
+        docker run --rm -v $(pwd):/zap/wrk/:rw -t owasp/zap2docker-stable zap-baseline.py -t http://20.206.197.95:8085 -r DAST.html 
+      continueOnError: true
+      displayName: DAST OWASP ZAP
