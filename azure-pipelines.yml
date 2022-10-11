@@ -72,7 +72,7 @@ stages:
      - task: dependency-check-build-task@6
        inputs:
          projectName: 'pet-clinic'
-         scanPath: '$(Pipeline.Workspace)'
+         scanPath: '$(Build.ArtifactStagingDirectory)'
          format: 'HTML'
        displayName: SCA
 - stage: Deploy 
